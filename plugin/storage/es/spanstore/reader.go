@@ -44,6 +44,7 @@ const (
 	startTimeField         = "startTime"
 	serviceNameField       = "process.serviceName"
 	operationNameField     = "operationName"
+	rootSpanField          = "__root_span"
 	objectTagsField        = "tag"
 	objectProcessTagsField = "process.tag"
 	nestedTagsField        = "tags"
@@ -392,12 +393,21 @@ func (s *SpanReader) findTraceIDs(ctx context.Context, traceQuery *spanstore.Tra
 
 	jaegerIndices := s.indicesForTimeRange(s.spanIndexPrefix, traceQuery.StartTimeMin, traceQuery.StartTimeMax)
 
-	searchService := s.client.Search(jaegerIndices...).
-		Type(spanType).
-		Size(0). // set to 0 because we don't want actual documents.
-		Aggregation(traceIDAggregation, aggregation).
-		IgnoreUnavailable(true).
-		Query(boolQuery)
+	if len(traceQuery.Tags) == 0 {
+		searchService := s.client.Search(jaegerIndices...).
+			Type(spanType).
+			Size(0). // set to 0 because we don't want actual documents.
+			IgnoreUnavailable(true).
+			Query(boolQuery).
+			Sort(startTimeField, "desc")
+	} else {
+		searchService := s.client.Search(jaegerIndices...).
+			Type(spanType).
+			Size(0). // set to 0 because we don't want actual documents.
+			Aggregation(traceIDAggregation, aggregation).
+			IgnoreUnavailable(true).
+			Query(boolQuery)
+	}
 
 	searchResult, err := searchService.Do(s.ctx)
 	if err != nil {
@@ -453,6 +463,12 @@ func (s *SpanReader) buildFindTraceIDsQuery(traceQuery *spanstore.TraceQueryPara
 		boolQuery.Must(operationNameQuery)
 	}
 
+	//add root_span query
+	if len(traceQuery.Tags) == 0 {
+		rootSpanQuery := s.buildRootSpanQuery(true)
+		boolQuery.Must(rootSpanQuery)
+	}
+
 	for k, v := range traceQuery.Tags {
 		tagQuery := s.buildTagQuery(k, v)
 		boolQuery.Must(tagQuery)
@@ -481,6 +497,10 @@ func (s *SpanReader) buildServiceNameQuery(serviceName string) elastic.Query {
 
 func (s *SpanReader) buildOperationNameQuery(operationName string) elastic.Query {
 	return elastic.NewMatchQuery(operationNameField, operationName)
+}
+
+func (s *SpanReader) buildRootSpanQuery(isRootSpan bool) elastic.Query {
+	return elastic.NewTermQuery(rootSpanField, isRootSpan)
 }
 
 func (s *SpanReader) buildTagQuery(k string, v string) elastic.Query {
